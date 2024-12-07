@@ -9,30 +9,103 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.stream.Collectors;
 
-record BankRecords(Collection<Owner> owners, Collection<Account> accounts, Collection<RegisterEntry> registerEntries) { }
+record BankRecords(Collection<Owner> owners, Collection<Account> accounts, Collection<RegisterEntry> registerEntries) {
+}
 
 public class Obfuscator {
     private static Logger logger = LogManager.getLogger(Obfuscator.class.getName());
 
     public BankRecords obfuscate(BankRecords rawObjects) {
-        // TODO: Obfuscate and return the records! Fill these in with your own
-        // Example: mask SSN
-        List<Owner> newOwners = new ArrayList<>();
+        List<Owner> obfuscatedOwners = new ArrayList<>();
         for (Owner o : rawObjects.owners()) {
-            String new_ssn = "***-**-" + o.ssn().substring(7);
-            // other changes...
-            newOwners.add(new Owner(o.name(), o.id(), o.dob(), new_ssn, o.address(), o.address2(), o.city(), o.state(), o.zip()));
+
+            String maskedSsn = "***-**-" + o.ssn().substring(7);
+
+            String fakeName = "User" + o.id();
+            String fakeAddress = "123 Placeholder St";
+            String fakeCity = "ObfusCity";
+            String fakeState = "XX";
+            String fakeZip = "00000";
+
+            obfuscatedOwners.add(new Owner(
+                    fakeName,
+                    o.id(),
+                    o.dob(),
+                    maskedSsn,
+                    fakeAddress,
+                    o.address2(),
+                    fakeCity,
+                    fakeState,
+                    fakeZip));
         }
-        Collection<Owner> obfuscatedOwners = newOwners;
-        Collection<Account> obfuscatedAccounts = rawObjects.accounts();
-        Collection<RegisterEntry> obfuscatedRegisterEntries = rawObjects.registerEntries();
+
+        List<Account> obfuscatedAccounts = new ArrayList<>();
+        Map<Long, Long> accountIdMapping = new HashMap<>();
+
+        for (Account acc : rawObjects.accounts()) {
+            Long obfuscatedId = accountIdMapping.computeIfAbsent(acc.getId(), id -> (long) id.hashCode());
+            Long obfuscatedOwnerId = accountIdMapping.computeIfAbsent(acc.getOwnerId(), id -> (long) id.hashCode());
+
+            String obfuscatedName = "Account-" + obfuscatedId;
+
+            if (acc instanceof SavingsAccount savings) {
+                SavingsAccount obfuscatedSavingsAccount = new SavingsAccount(
+                        obfuscatedName,
+                        obfuscatedId,
+                        savings.getBalance(),
+                        savings.getInterestRate(),
+                        obfuscatedOwnerId);
+                obfuscatedSavingsAccount.setMinimumBalance(savings.getMinimumBalance());
+                obfuscatedSavingsAccount.setBelowMinimumFee(savings.getBelowMinimumFee());
+                obfuscatedAccounts.add(obfuscatedSavingsAccount);
+            } else if (acc instanceof CheckingAccount checking) {
+                String details = checking.toString();
+                long checkNumber = extractCheckNumberFromString(details);
+
+                CheckingAccount obfuscatedCheckingAccount = new CheckingAccount(
+                        obfuscatedName,
+                        obfuscatedId,
+                        checking.getBalance(),
+                        checkNumber,
+                        obfuscatedOwnerId);
+
+                obfuscatedCheckingAccount.setMinimumBalance(checking.getMinimumBalance());
+                obfuscatedCheckingAccount.setBelowMinimumFee(checking.getBelowMinimumFee());
+                obfuscatedAccounts.add(obfuscatedCheckingAccount);
+            } else {
+                throw new IllegalArgumentException("Unknown account type: " + acc.getClass());
+            }
+        }
+
+        List<RegisterEntry> obfuscatedRegisterEntries = new ArrayList<>();
+        for (RegisterEntry entry : rawObjects.registerEntries()) {
+            Long obfuscatedAccountId = accountIdMapping.get(entry.accountId());
+
+            RegisterEntry obfuscatedEntry = new RegisterEntry(
+                    entry.getId(),
+                    obfuscatedAccountId,
+                    entry.entryName(),
+                    entry.amount(),
+                    entry.date());
+            obfuscatedRegisterEntries.add(obfuscatedEntry);
+        }
 
         return new BankRecords(obfuscatedOwners, obfuscatedAccounts, obfuscatedRegisterEntries);
+    }
+
+    private long extractCheckNumberFromString(String details) {
+        String marker = "Current Check #";
+        int index = details.indexOf(marker);
+        if (index == -1) {
+            throw new RuntimeException("Check number not found in toString output");
+        }
+        return Long.parseLong(details.substring(index + marker.length()).trim());
     }
 
     /**
@@ -40,12 +113,12 @@ public class Obfuscator {
      * records.
      *
      * To use the original integration test suite files run
-     *   "git checkout -- src/test/resources/persister_integ.properties"
+     * "git checkout -- src/test/resources/persister_integ.properties"
      */
     public void updateIntegProperties() throws IOException {
         Properties props = new Properties();
         File propsFile = new File("src/test/resources/persister_integ.properties".replace('/', File.separatorChar));
-        if (! propsFile.exists() || !propsFile.canWrite()) {
+        if (!propsFile.exists() || !propsFile.canWrite()) {
             throw new RuntimeException("Properties file must exist and be writable: " + propsFile);
         }
         try (InputStream propsStream = new FileInputStream(propsFile)) {
@@ -56,8 +129,8 @@ public class Obfuscator {
         try (OutputStream propsStream = new FileOutputStream(propsFile)) {
             String comment = String.format(
                     "Note: Don't check in changes to this file!!\n" +
-                    "#Modified by %s\n" +
-                    "#to reset run 'git checkout -- %s'",
+                            "#Modified by %s\n" +
+                            "#to reset run 'git checkout -- %s'",
                     this.getClass().getName(), propsFile);
             props.store(propsStream, comment);
         }
@@ -96,7 +169,7 @@ public class Obfuscator {
                 .stream()
                 .collect(Collectors.groupingBy(rec -> rec.getClass()));
         Persister.writeRecordsToCsv(splitAccounts.get(SavingsAccount.class), "savings");
-        Persister.writeRecordsToCsv(splitAccounts.get(CheckingAccount.class),"checking");
+        Persister.writeRecordsToCsv(splitAccounts.get(CheckingAccount.class), "checking");
         Persister.writeRecordsToCsv(obfuscatedRecords.registerEntries(), "register");
 
         logger.info("Original   record counts: {} owners, {} accounts, {} registers",
